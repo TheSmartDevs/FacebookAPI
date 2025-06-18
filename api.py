@@ -2,10 +2,11 @@ from flask import Flask, request, jsonify
 import cloudscraper
 from bs4 import BeautifulSoup
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlencode
 import socket
 import sys
 import logging
+import requests
 
 app = Flask(__name__)
 
@@ -24,15 +25,54 @@ def get_local_ip():
     except Exception:
         return "0.0.0.0"  # Fallback to default
 
+def get_facebook_thumbnail_url(video_url):
+    """
+    Fetches the thumbnail download URL for a given Facebook video URL.
+    
+    Args:
+        video_url (str): The Facebook video URL
+    
+    Returns:
+        str: The thumbnail download URL or None if not found
+    """
+    api_url = "https://vidthumbnail.com/facebook/download"
+    payload = {"videoUrl": video_url}
+    
+    try:
+        response = requests.post(api_url, data=payload, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        
+        if response.status_code != 200:
+            return None
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
+        download_button = soup.find('a', class_='btn py-3 px-4 facebook btn-lg w-100')
+        
+        if not download_button:
+            return None
+            
+        download_url = download_button.get('href')
+        if not download_url:
+            return None
+            
+        if download_url.startswith('/'):
+            download_url = urljoin("https://vidthumbnail.com", download_url)
+            
+        return download_url
+        
+    except Exception:
+        return None
+
 def get_fdown_download_links(fb_url):
     """
-    Scrape FDown.net to get download links and title for a given Facebook video URL.
+    Scrape FDown.net to get download links, title, and thumbnail for a given Facebook video URL.
     
     Args:
         fb_url (str): The Facebook video URL to download.
     
     Returns:
-        dict: Contains download links and video title, or error message.
+        dict: Contains download links, video title, thumbnail URL, or error message.
     """
     try:
         base_url = "https://fdown.net/"
@@ -107,7 +147,14 @@ def get_fdown_download_links(fb_url):
         if not download_links:
             return {"error": "No downloadable video links found."}
         
-        return {"links": download_links, "title": title}
+        # Get thumbnail URL
+        thumbnail_url = get_facebook_thumbnail_url(fb_url)
+        
+        return {
+            "links": download_links,
+            "title": title,
+            "thumbnail": thumbnail_url if thumbnail_url else "Not available"
+        }
     
     except Exception as e:
         return {"error": f"Failed to fetch download links: {str(e)}"}
@@ -121,19 +168,24 @@ def welcome():
         "status": "success",
         "message": "Welcome to the Facebook Video Downloader API!",
         "endpoint": "/dl?url=<facebook_video_url>",
-        "example": "/dl?url=https://www.facebook.com/some-public-video"
+        "example": "/dl?url=https://www.facebook.com/some-public-video",
+        "response_format": {
+            "links": [{"quality": "HD/SD", "url": "download_url"}],
+            "title": "video_title",
+            "thumbnail": "thumbnail_url"
+        }
     }), 200
 
 @app.route('/dl', methods=['GET'])
 def download_links():
     """
-    API endpoint to get download links and title for a Facebook video URL.
+    API endpoint to get download links, title, and thumbnail for a Facebook video URL.
     
     Query Parameter:
         url: The Facebook video URL (e.g., /dl?url=https://www.facebook.com/video-url)
     
     Response JSON:
-        {"links": [{"quality": "HD", "url": "link"}, ...], "title": "Video Title"} or {"error": "message"}
+        {"links": [{"quality": "HD", "url": "link"}, ...], "title": "Video Title", "thumbnail": "thumbnail_url"} or {"error": "message"}
     """
     try:
         fb_url = request.args.get('url', '').strip()
@@ -154,7 +206,7 @@ if __name__ == "__main__":
     ip = get_local_ip()
     print(f"Starting Flask server on http://{ip}:{port}/", flush=True)
     try:
-        app.run(host="0.0.0.0", port=port, debug=True)  # Re-enable default reloader
+        app.run(host="0.0.0.0", port=port, debug=True)
     except Exception as e:
         print(f"Failed to start server: {str(e)}", flush=True)
         sys.exit(1)
