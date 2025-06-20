@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 import cloudscraper
 from bs4 import BeautifulSoup
 import re
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin
 import socket
 import sys
 import logging
@@ -64,9 +64,66 @@ def get_facebook_thumbnail_url(video_url):
     except Exception:
         return None
 
+def get_fb_video_links(fb_url):
+    """
+    Fetches download links for a given Facebook video URL using savef.app API.
+    
+    Args:
+        fb_url (str): The Facebook video URL
+    
+    Returns:
+        dict: Same format as FDown.net response with links, title, and thumbnail
+    """
+    api_url = "https://savef.app/api/ajaxSearch"
+    payload = {
+        "p": "home",
+        "q": fb_url,
+        "lang": "en",
+        "web": "savef.app",
+        "v": "v2",
+        "w": ""
+    }
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "https://savef.app",
+        "Referer": "https://savef.app/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    }
+
+    try:
+        response = requests.post(api_url, data=payload, headers=headers)
+        response.raise_for_status()
+        html_content = response.json().get("data", "")
+        
+        soup = BeautifulSoup(html_content, "html.parser")
+        download_links = []
+
+        for link in soup.select("a.download-link-fb"):
+            quality = link.find_previous("td", class_="video-quality").text.strip()
+            # Map savef.app quality to FDown.net style (HD or SD)
+            normalized_quality = "HD" if "720p" in quality else "SD"
+            href = link["href"]
+            download_links.append({'quality': normalized_quality, 'url': href})
+
+        if not download_links:
+            return {"error": "No downloadable video links found from savef.app."}
+
+        # Get thumbnail URL
+        thumbnail_url = get_facebook_thumbnail_url(fb_url)
+        
+        return {
+            "links": download_links,
+            "title": "Unknown Title",  # Title not available from savef.app
+            "thumbnail": thumbnail_url if thumbnail_url else "Not available"
+        }
+
+    except Exception as e:
+        return {"error": f"Failed to fetch download links from savef.app: {str(e)}"}
+
 def get_fdown_download_links(fb_url):
     """
     Scrape FDown.net to get download links, title, and thumbnail for a given Facebook video URL.
+    If FDown.net fails, use savef.app as a fallback.
     
     Args:
         fb_url (str): The Facebook video URL to download.
@@ -104,10 +161,9 @@ def get_fdown_download_links(fb_url):
         error_div = soup.find('div', class_='alert-danger')
         if error_div:
             error_text = error_div.get_text(strip=True).lower()
-            if "private" in error_text:
-                return {"error": "The video is private or restricted. Please use a public video URL."}
-            elif "invalid" in error_text or "not found" in error_text:
-                return {"error": "The provided URL is invalid or not supported. Ensure it’s a valid Facebook video URL."}
+            if "private" in error_text or "invalid" in error_text or "not found" in error_text:
+                # Try fallback API
+                return get_fb_video_links(fb_url)
             return {"error": "Unknown error from FDown.net"}
         
         # Extract video title
@@ -145,7 +201,8 @@ def get_fdown_download_links(fb_url):
                 download_links.append({'quality': f'Quality_{i}', 'url': link})
         
         if not download_links:
-            return {"error": "No downloadable video links found."}
+            # Try fallback API
+            return get_fb_video_links(fb_url)
         
         # Get thumbnail URL
         thumbnail_url = get_facebook_thumbnail_url(fb_url)
@@ -157,7 +214,8 @@ def get_fdown_download_links(fb_url):
         }
     
     except Exception as e:
-        return {"error": f"Failed to fetch download links: {str(e)}"}
+        # Try fallback API
+        return get_fb_video_links(fb_url)
 
 @app.route('/', methods=['GET'])
 def welcome():
